@@ -5,6 +5,8 @@
 #include <OneWire.h> 
 #include <DallasTemperature.h>
 #include <time.h>
+#include <ArduinoOTA.h>
+#include <EEPROM.h>
 
 #include <limits.h>
 #include <stdio.h>
@@ -19,6 +21,9 @@ const char* passwordSecondary = "xxx";
 const String authLogin = "xxx";
 const String authPassword = "xxx";
 
+const char* OTAhostname = "xxx";
+const String OTAPassword = "xxx";
+
 const int RELAY_HEAT = D3;
 const int RELAY_PUMP = D4;
 
@@ -29,7 +34,8 @@ const int TEMPERATURE_PRECISION = 10;
 const int DISPLAY_CLOCK = D0;
 const int DISPLAY_DATA = D1;
 
-const int SIZE_LOG_DATA = 500;
+const int SIZE_LOG_DATA = 144;
+const int SAVE_LOG_SEC_DELAY = 600;
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -54,7 +60,7 @@ void handleRelayPump();
 String arrayLogs[SIZE_LOG_DATA];
 int arrayLogsIndex = -1;
 bool arrayLogsLock = false;
-
+bool arrayLogsStarted = false;
 
 String getHeads() {
     String content ="<!DOCTYPE html>";
@@ -81,7 +87,7 @@ String getTempLogs() {
     for (int i = 0; i <= ((sizeof(arrayLogs) / sizeof(arrayLogs[0])) - 1); i++) {
         content += arrayLogs[i];
 
-        if (i != ((sizeof(arrayLogs) / sizeof(arrayLogs[0])) - 1) && arrayLogs[i] != "") {
+        if (i < ((sizeof(arrayLogs) / sizeof(arrayLogs[0])) - 1) && arrayLogs[i] != "") {
             content += ",";  
         }
     }
@@ -281,6 +287,9 @@ void handleRelayHeat() {
         RELAY_STATUS_HEAT = LOW;
     }
 
+    EEPROM.write(0, RELAY_STATUS_HEAT);
+    EEPROM.commit();
+
     redirectToBase();
     return;
 }
@@ -297,6 +306,9 @@ void handleRelayPump() {
         digitalWrite(RELAY_PUMP, LOW);
         RELAY_STATUS_PUMP = LOW;
     }
+
+    EEPROM.write(1, RELAY_STATUS_PUMP);
+    EEPROM.commit();
 
     redirectToBase();
     return;
@@ -318,6 +330,7 @@ void handleGetTempLogs() {
 }
 
 void setup(void) {
+    EEPROM.begin(2);
     Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     Serial.println("");
@@ -344,6 +357,8 @@ void setup(void) {
         Serial.print(".");
     }
 
+    wifi_set_sleep_type(NONE_SLEEP_T);
+
     Serial.println("");
 
     Serial.print("IP address: ");
@@ -353,8 +368,28 @@ void setup(void) {
     // Initialize the output variables as outputs
     pinMode(RELAY_HEAT, OUTPUT);
     pinMode(RELAY_PUMP, OUTPUT);
-    digitalWrite(RELAY_HEAT, RELAY_STATUS_HEAT);
-    digitalWrite(RELAY_PUMP, RELAY_STATUS_PUMP);
+    
+    byte heatEeprom = EEPROM.read(0);
+    if (heatEeprom != 255) {
+        digitalWrite(RELAY_HEAT, heatEeprom);
+        RELAY_STATUS_HEAT = heatEeprom;
+    } else {
+        digitalWrite(RELAY_HEAT, RELAY_STATUS_HEAT);  
+    }
+    
+    byte pumpEeprom = EEPROM.read(1);
+    if (pumpEeprom != 255) {
+        digitalWrite(RELAY_PUMP, pumpEeprom);
+        RELAY_STATUS_PUMP = pumpEeprom;
+    } else {
+        digitalWrite(RELAY_PUMP, RELAY_STATUS_PUMP);  
+    }
+
+    Serial.print("Eeprom heat ");
+    Serial.println(heatEeprom);
+
+    Serial.print("Eeprom pump ");
+    Serial.println(pumpEeprom);
 
     //EACH TRIGGER NEEDS THIS TO BE ADDED
     server.on("/", handleRoot);
@@ -404,9 +439,30 @@ void setup(void) {
         delay(500);
     }
     Serial.println("\nTime done");
+
+    ArduinoOTA.setHostname(OTAhostname);
+    ArduinoOTA.onStart([]() {
+        Serial.println("Start");
+    });
+    ArduinoOTA.onEnd([]() {
+        Serial.println("\nEnd");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+    ArduinoOTA.begin();
 }
 
 void loop(void) {
+    ArduinoOTA.handle();
     server.handleClient();
     unsigned long currentMillis = millis();
 
@@ -423,7 +479,7 @@ void loop(void) {
     timeString = String(formattedTime);
     int timeInt = (int) now;
 
-    if (timeInt % 10 == 0 && !arrayLogsLock) {
+    if ((timeInt % SAVE_LOG_SEC_DELAY == 0 && !arrayLogsLock) || !arrayLogsStarted) {
         if (arrayLogsIndex < (SIZE_LOG_DATA - 1)) {
             arrayLogsIndex = arrayLogsIndex + 1;  
         } else {
@@ -439,10 +495,13 @@ void loop(void) {
     
         arrayLogs[arrayLogsIndex] = "[\"" + timeString + "\"," + String(displayTemp) +"0]";
  
-        arrayLogsLock = true; 
+        arrayLogsLock = true;
+        arrayLogsStarted = true;
     } else {
         arrayLogsLock = false;
     }
+
+    delay(500);
 }
 
 
