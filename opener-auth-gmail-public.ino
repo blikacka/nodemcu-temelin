@@ -12,30 +12,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define HTTP_MAX_DATA_WAIT 10000 //ms to wait for the client to send the request
+#define HTTP_MAX_POST_WAIT 10000 //ms to wait for POST data to arrive
+#define HTTP_MAX_SEND_WAIT 10000 //ms to wait for data chunk to be ACKed
+#define HTTP_MAX_CLOSE_WAIT 10000 //ms to wait for the client to close the connection
+
 const char* ssidMain = "xxx";
 const char* passwordMain = "xxx";
-
-const char* ssidSecondary = "xxx";
-const char* passwordSecondary = "xxx";
 
 const String authLogin = "xxx";
 const String authPassword = "xxx";
 
-const char* OTAhostname = "xxx";
+const char* OTAhostname = "ESP-xxx";
 const String OTAPassword = "xxx";
 
-const int RELAY_HEAT = D3;
-const int RELAY_PUMP = D4;
+const int RELAY_HEAT = D7;
+const int RELAY_PUMP = D8;
 
 //pro teploměr
 const int ONE_WIRE_BUS = D2;
 const int TEMPERATURE_PRECISION = 10;
 
-const int DISPLAY_CLOCK = D0;
-const int DISPLAY_DATA = D1;
+const int DISPLAY_CLOCK = D6;
+const int DISPLAY_DATA = D5;
 
-const int SIZE_LOG_DATA = 144;
-const int SAVE_LOG_SEC_DELAY = 600;
+const int SIZE_LOG_DATA = 200; // num of logged elements -> 144
+const int SAVE_LOG_SEC_DELAY = 600;  // in seconds
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -94,6 +96,24 @@ String getTempLogs() {
     content += "]";
 
     return content;
+}
+
+String getUptimeString() {
+    unsigned long runningMilis = millis() - timer;
+
+    int runningSeconds = runningMilis / 1000;
+    runningMilis %= 1000;
+
+    int runningMinutes = runningSeconds / 60;
+    runningSeconds %= 60;
+    
+    int runningHours = runningMinutes / 60;
+    runningMinutes %= 60;   
+     
+    int runningDays = runningHours / 24;
+    runningHours %= 24;
+
+    return String(runningDays) + "d " + String(runningHours) + "h " + String(runningMinutes) + "m " + String(runningSeconds) + "s";
 }
 
 //Check if header is present and correct
@@ -187,22 +207,8 @@ void handleRoot() {
     String heatStat = RELAY_STATUS_HEAT == LOW ? "<span class=\"text-danger font-weight-bold\">vypnuto</span>" : "<span class=\"text-success font-weight-bold\">zapnuto</span>";
     String pumpStat = RELAY_STATUS_PUMP == LOW ? "<span class=\"text-danger font-weight-bold\">vypnuto</span>" : "<span class=\"text-success font-weight-bold\">zapnuto</span>";
 
-    long runningMilis = millis() - timer;
-
-    int runningSeconds = runningMilis / 1000;
-    runningMilis %= 1000;
-
-    int runningMinutes = runningSeconds / 60;
-    runningSeconds %= 60;
-    
-    int runningHours = runningMinutes / 60;
-    runningMinutes %= 60;   
-     
-    int runningDays = runningHours / 24;
-    runningHours %= 24;
-
     String content = getHeads();
-    content += "<script> var dataChart = " + getTempLogs() + "</script>";
+    content += "<script> var dataChart = [];</script>";
     content += "<script>var localIp = '" + LOCAL_IP + "';</script>";
     content += "<script>var hashIp = window.location.hash.substr(1); var ajaxIp = hashIp && hashIp !== '' ? hashIp : localIp;</script>";
     //content += "<meta http-equiv=refresh content= 2;/>";
@@ -227,14 +233,18 @@ void handleRoot() {
     content += "<a href='/pump' class=\"btn btn-info btn-block\">ZAPNOUT / VYPNOUT ČERPADLO</a>";
     content += "<hr />";
     content += "<a href=\"/login?DISCONNECT=YES\"><b>Odhlásit se</b></a>";
-    content += "<div class=\"mt-3\"><small>Od posledního restartu: <b>" + String(runningDays) + "d " + String(runningHours) + "h " + String(runningMinutes) + "m " + String(runningSeconds) + "s</b></small></div>";
+    content += "<div class=\"mt-3\"><small>Od posledního restartu: <b id=\"uptime-string\">" + getUptimeString() + "</b></small></div>";
+    content += "<div class=\"mt-1\"><small>Volná paměť: <b>" + String(system_get_free_heap_size()) + "</b></small></div>";
     content += "<script>";
     content += "var callTemp = function() { $.ajax({ url: '/get-temp', type: 'GET', complete: function(res) { $('#spinner').addClass('d-none'); $('#temp-result').removeClass('d-none').html(res.responseText); } }) };";
+    content += "var callGraph = function() { $.ajax({ url: '/get-temp-logs', type: 'GET', complete: function(res) { dataChart = JSON.parse(res.responseText.replace('],]', ']]')); drawChart(); } }) };";
+    content += "var callUptime = function() { $.ajax({ url: '/get-uptime', type: 'GET', complete: function(res) { $('#uptime-string').html(res.responseText); } }) };";
     content += "</script>";
     content += "<script>$(document).ready(function(){ ";
     content += "setInterval(function() { callTemp(); }, 5000);";
     content += "setInterval(function() { callGraph(); }, 5000);";
-    content += "callTemp();";
+    content += "setInterval(function() { callUptime(); }, 10000);";
+    content += "callTemp();callGraph();";
     content += "})</script>";
     content += "<script type=\"text/javascript\">";
     content += "  google.charts.load('current', {'packages':['corechart']});";
@@ -246,10 +256,7 @@ void handleRoot() {
     content += "    chart.draw(data, options);";
     content += "  }";
     content += "</script>";
-    content += "<script>";
-    content += "var callGraph = function() { $.ajax({ url: '/get-temp-logs', type: 'GET', complete: function(res) { dataChart = JSON.parse(res.responseText.replace('],]', ']]')); drawChart(); } }) };";
-    content += "</script>";
-    
+   
     content += getEnds();
 
     server.send(200, "text/html", content);
@@ -329,41 +336,14 @@ void handleGetTempLogs() {
     server.send(200, "text/html", content);
 }
 
+void handleGetUptime() {
+    String content = getUptimeString();
+    server.send(200, "text/html", content);
+}
+
 void setup(void) {
     EEPROM.begin(2);
     Serial.begin(115200);
-    WiFi.mode(WIFI_STA);
-    Serial.println("");
-
-    int wifiNetworks = WiFi.scanNetworks();
-    for (int i = 0; i < wifiNetworks; ++i) {
-        if (WiFi.SSID(i) == ssidMain ) {
-            Serial.print("Connecting to ");
-            Serial.println(ssidMain);
-            WiFi.begin(ssidMain, passwordMain);
-            break;
-        }
-        if (WiFi.SSID(i) == ssidSecondary) {
-            Serial.print("Connecting to ");
-            Serial.println(ssidSecondary);
-            WiFi.begin(ssidSecondary, passwordSecondary);
-            break;
-        }
-    }
-
-    // Wait for connection
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    wifi_set_sleep_type(NONE_SLEEP_T);
-
-    Serial.println("");
-
-    Serial.print("IP address: ");
-    LOCAL_IP = WiFi.localIP().toString();
-    Serial.println(LOCAL_IP);
 
     // Initialize the output variables as outputs
     pinMode(RELAY_HEAT, OUTPUT);
@@ -391,12 +371,35 @@ void setup(void) {
     Serial.print("Eeprom pump ");
     Serial.println(pumpEeprom);
 
+    Serial.println("==== SET WIFI ====");
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
+    Serial.println("");
+
+    WiFi.begin(ssidMain, passwordMain);
+
+    // Wait for connection
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    wifi_set_sleep_type(NONE_SLEEP_T);
+
+    Serial.println("");
+
+    Serial.print("IP address: ");
+    LOCAL_IP = WiFi.localIP().toString();
+    Serial.println(LOCAL_IP);
+
     //EACH TRIGGER NEEDS THIS TO BE ADDED
     server.on("/", handleRoot);
     server.on("/heat", handleRelayHeat);
     server.on("/pump", handleRelayPump);
     server.on("/get-temp", handleGetTemp);
     server.on("/get-temp-logs", handleGetTempLogs);
+    server.on("/get-uptime", handleGetUptime);
     server.on("/login", handleLogin);
 
     server.onNotFound(handleNotFound);
@@ -462,46 +465,54 @@ void setup(void) {
 }
 
 void loop(void) {
-    ArduinoOTA.handle();
-    server.handleClient();
-    unsigned long currentMillis = millis();
+    try {
+        //Serial.println(WiFi.status());Serial.println(WL_CONNECTED);
 
-    sensors.requestTemperatures();
-    TEMP_C = sensors.getTempC(insideThermometer);
+        ArduinoOTA.handle();
+        server.handleClient();
+    
+        sensors.requestTemperatures();
+        TEMP_C = sensors.getTempC(insideThermometer);
+    
+        int displayTemp = TEMP_C * 100;
+        display.showNumberDec(displayTemp);
+    
+        time_t now = time(nullptr);
+        char formattedTime[20];
+        strftime(formattedTime, 20, "%d.%m.%Y %H:%M", localtime(&now));
+        String timeString = String(formattedTime);
+        int timeInt = (int) now;
 
-    int displayTemp = TEMP_C * 100;
-    display.showNumberDec(displayTemp);
-
-    time_t now = time(nullptr);
-    char formattedTime[20];
-    strftime(formattedTime, 20, "%d.%m.%Y %H:%M", localtime(&now));
-    String timeString;
-    timeString = String(formattedTime);
-    int timeInt = (int) now;
-
-    if ((timeInt % SAVE_LOG_SEC_DELAY == 0 && !arrayLogsLock) || !arrayLogsStarted) {
-        if (arrayLogsIndex < (SIZE_LOG_DATA - 1)) {
-            arrayLogsIndex = arrayLogsIndex + 1;  
-        } else {
-            String revesedArrayLogs[SIZE_LOG_DATA];
-            for(int i = 0, j = (SIZE_LOG_DATA - 1); i <= (SIZE_LOG_DATA - 1); i++, j--) {
-                revesedArrayLogs[i] = arrayLogs[j]; 
+        if ((timeInt % SAVE_LOG_SEC_DELAY == 0 && !arrayLogsLock) || !arrayLogsStarted) {
+            if (arrayLogsIndex < (SIZE_LOG_DATA - 1)) {
+                arrayLogsIndex = arrayLogsIndex + 1;  
+            } else {
+                String revesedArrayLogs[SIZE_LOG_DATA];
+                
+                for(int i = 0, j = (SIZE_LOG_DATA - 1); i <= (SIZE_LOG_DATA - 1); i++, j--) {
+                    revesedArrayLogs[i] = arrayLogs[j]; 
+                }
+        
+                for(int i = 0, j = (SIZE_LOG_DATA - 2); i <= (SIZE_LOG_DATA - 2); i++, j--) {
+                    arrayLogs[i] = revesedArrayLogs[j];  
+                }     
             }
-    
-            for(int i = 0, j = (SIZE_LOG_DATA - 2); i <= (SIZE_LOG_DATA - 2); i++, j--) {
-                arrayLogs[i] = revesedArrayLogs[j];  
-            }     
+        
+            arrayLogs[arrayLogsIndex] = "[\"" + timeString + "\"," + String(displayTemp) +"0]";
+     
+            arrayLogsLock = true;
+            arrayLogsStarted = true;
+            //yield();
+        } else {
+            arrayLogsLock = false;
         }
+        //Serial.print("Pocet zaznamu - " + String(arrayLogsIndex) + " -- ");
+        //Serial.println(timeString);
     
-        arrayLogs[arrayLogsIndex] = "[\"" + timeString + "\"," + String(displayTemp) +"0]";
- 
-        arrayLogsLock = true;
-        arrayLogsStarted = true;
-    } else {
-        arrayLogsLock = false;
+        //delay(500);
+    } catch (...) {
+        Serial.println("Na necem to chtelo spadnout...");
     }
-
-    delay(500);
 }
 
 
